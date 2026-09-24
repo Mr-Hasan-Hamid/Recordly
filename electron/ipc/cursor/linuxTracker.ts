@@ -151,8 +151,10 @@ export function startLinuxCursorTracker(
 
 							if (button !== null) {
 								if (value === 1) {
+									getLinuxCursorSync();
 									onMouseDown(button);
 								} else if (value === 0) {
+									getLinuxCursorSync();
 									onMouseUp();
 								}
 							}
