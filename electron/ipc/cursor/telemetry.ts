@@ -24,6 +24,7 @@ import {
 } from "../state";
 import type { CursorInteractionType, CursorTelemetryPoint, CursorVisualType } from "../types";
 import { getScreen, getTelemetryPathForVideo } from "../utils";
+import { getLinuxCursorSync } from "./linuxTracker";
 
 export function clamp(value: number, min: number, max: number) {
 	return Math.min(max, Math.max(min, value));
@@ -172,8 +173,16 @@ export function getNormalizedCursorPoint() {
 	const primarySf =
 		process.platform !== "darwin" ? getScreen().getPrimaryDisplay().scaleFactor || 1 : 1;
 
-	const cursor = isLinuxCacheFresh
-		? { x: linuxCursorCache.x / primarySf, y: linuxCursorCache.y / primarySf }
+	let linuxCursor = isLinuxCacheFresh ? linuxCursorCache : null;
+	if (process.platform === "linux" && !linuxCursor) {
+		const syncPoint = getLinuxCursorSync();
+		if (syncPoint) {
+			linuxCursor = { x: syncPoint.x, y: syncPoint.y, updatedAt: Date.now() };
+		}
+	}
+
+	const cursor = linuxCursor
+		? { x: linuxCursor.x / primarySf, y: linuxCursor.y / primarySf }
 		: fallbackCursor;
 
 	const windowBounds = selectedSource?.id?.startsWith("window:") ? selectedWindowBounds : null;

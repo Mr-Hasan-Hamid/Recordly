@@ -17,6 +17,7 @@ import type {
 	UiohookLike,
 	UiohookModuleNamespace,
 } from "../types";
+import { isLinuxWayland, startLinuxCursorTracker } from "./linuxTracker";
 import {
 	getCursorCaptureElapsedMs,
 	getHookCursorScreenPoint,
@@ -178,12 +179,6 @@ function loadUiohookModule() {
 }
 
 export function shouldStartGlobalInteractionHook(platform: NodeJS.Platform = process.platform) {
-	// On macOS, uiohook can block forever while its native event tap starts
-	// (notably when Accessibility permission is unavailable or stale). Because
-	// start() executes synchronously, that freezes Electron's main thread and
-	// makes every window, including the recording HUD, unresponsive. Cursor
-	// position and visual-state telemetry still come from the existing native
-	// macOS monitor and Electron sampler.
 	return platform !== "darwin";
 }
 
@@ -242,12 +237,30 @@ export async function startInteractionCapture() {
 		return;
 	}
 
+	stopInteractionCapture();
+
+	let linuxCleanup: (() => void) | null = null;
+	if (process.platform === "linux") {
+		linuxCleanup = startLinuxCursorTracker(
+			(button) => recordCursorMouseDown(button),
+			() => recordCursorMouseUp(),
+		);
+	}
+
 	if (!shouldStartGlobalInteractionHook()) {
 		console.warn("[CursorTelemetry] Skipping the blocking global interaction hook on macOS.");
 		return;
 	}
 
-	stopInteractionCapture();
+	if (process.platform === "linux" && isLinuxWayland()) {
+		if (linuxCleanup) {
+			setInteractionCaptureCleanup(linuxCleanup);
+		}
+		console.log(
+			"[CursorTelemetry] Using native Linux Wayland/evdev tracker (skipping uiohook).",
+		);
+		return;
+	}
 
 	try {
 		const hook = loadUiohookModule();
@@ -296,6 +309,13 @@ export async function startInteractionCapture() {
 		}
 
 		setInteractionCaptureCleanup(() => {
+			if (linuxCleanup) {
+				try {
+					linuxCleanup();
+				} catch {
+					// ignore
+				}
+			}
 			try {
 				if (typeof hook.off === "function") {
 					hook.off("mousedown", onMouseDown);

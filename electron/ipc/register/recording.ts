@@ -1872,9 +1872,9 @@ export function registerRecordingHandlers(
 			resetCursorCaptureClock();
 			setLinuxCursorScreenPoint(null);
 			setLastLeftClick(null);
+			void startInteractionCapture();
 			sampleCursorPoint();
 			startCursorSampling();
-			void startInteractionCapture();
 		} else {
 			setIsCursorCaptureActive(false);
 			stopCursorCapture();
