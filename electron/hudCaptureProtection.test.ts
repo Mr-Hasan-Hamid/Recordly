@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	getHudCaptureExcludedProcessIds,
+	shouldProtectHudCapture,
 	supportsHudCaptureProtection,
 } from "../src/lib/hudCaptureProtection";
 
@@ -18,4 +19,12 @@ describe("HUD capture protection lifecycle", () => {
 		expect(getHudCaptureExcludedProcessIds("win32", true, 734)).toEqual([]);
 		expect(getHudCaptureExcludedProcessIds("linux", true, 734)).toEqual([]);
 	});
+});
+
+it("protects initial capture frames while keeping idle and failed starts visible", () => {
+	expect(shouldProtectHudCapture(true, false, false)).toBe(false);
+	expect(shouldProtectHudCapture(true, false, true)).toBe(true);
+	expect(shouldProtectHudCapture(true, true, false)).toBe(true);
+	expect(shouldProtectHudCapture(true, false, false)).toBe(false);
+	expect(shouldProtectHudCapture(false, true, true)).toBe(false);
 });

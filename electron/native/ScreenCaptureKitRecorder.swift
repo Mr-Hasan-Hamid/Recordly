@@ -394,13 +394,8 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 	func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
 		guard sessionStarted, sampleBuffer.isValid, isRecording else { return }
-		guard let presentationTime = adjustedPresentationTime(for: sampleBuffer, outputType: outputType) else { return }
 
 		if outputType == .screen {
-			if frameCount > 0 && CMTimeCompare(presentationTime, lastVideoPresentationTime) <= 0 {
-				return
-			}
-
 			guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
 					  let attachment = attachments.first,
 					  let statusRawValue = attachment[SCStreamFrameInfo.status] as? Int,
@@ -413,8 +408,10 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 				  assetWriter?.status == .writing,
 				  videoInput.isReadyForMoreMediaData else { return }
 
-			if firstSampleTime == .zero {
-				firstSampleTime = sampleBuffer.presentationTimeStamp
+			// Only a complete frame that the writer can accept may establish time zero.
+			guard let presentationTime = adjustedPresentationTime(for: sampleBuffer, outputType: outputType) else { return }
+			if frameCount > 0 && CMTimeCompare(presentationTime, lastVideoPresentationTime) <= 0 {
+				return
 			}
 
 			lastSampleBuffer = sampleBuffer
@@ -439,9 +436,15 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 						print("Recording started")
 						fflush(stdout)
 					}
+			} else if frameCount == 0 {
+				// A failed crop/append must not leave an empty interval before frame one.
+				firstSampleTime = .zero
 			}
 			return
 		}
+
+		guard frameCount > 0,
+			  let presentationTime = adjustedPresentationTime(for: sampleBuffer, outputType: outputType) else { return }
 
 		if outputType == .audio {
 			guard let systemAudioInput else { return }
@@ -955,6 +958,8 @@ final class RecorderService {
 	private let queue = DispatchQueue(label: "recordly.screencapturekit.commands")
 	private let completionGroup = DispatchGroup()
 	private var succeeded = true
+	// Accessed only by serialized command operations.
+	private var captureStarted = false
 
 	private func enqueue(_ operation: @escaping () async -> Void) {
 		queue.async {
@@ -972,6 +977,7 @@ final class RecorderService {
 		enqueue {
 			do {
 				try await self.recorder.startCapture(configJSON: configJSON)
+				self.captureStarted = true
 			} catch {
 				self.succeeded = false
 				fputs("Error starting capture: \(error.localizedDescription)\n", stderr)
@@ -983,6 +989,9 @@ final class RecorderService {
 
 	func stop() {
 		enqueue {
+			// Failed startup already releases completionGroup. EOF must not do it again.
+			guard self.captureStarted else { return }
+			self.captureStarted = false
 			do {
 				let outputPath = try await self.recorder.stopCapture()
 				print("Recording stopped. Output path: \(outputPath)")
@@ -1083,10 +1092,12 @@ DispatchQueue.global(qos: .utility).async {
 		}
 
 		if input == "stop" {
-			service.stop()
 			break
 		}
 	}
+	// EOF means the Electron parent exited or restarted. Finalize and release
+	// capture devices just as we do for an explicit stop command.
+	service.stop()
 }
 
 if !service.waitUntilFinished() {

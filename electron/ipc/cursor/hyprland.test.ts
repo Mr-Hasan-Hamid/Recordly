@@ -1,3 +1,4 @@
+import type fs from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({
@@ -8,10 +9,13 @@ vi.mock("electron", () => ({
 
 import { activeCursorSamples, linuxCursorScreenPoint, setActiveCursorSamples } from "../state";
 import {
+	decodeEvdevButtonChunk,
 	getHyprlandRequestSocketPath,
+	hasMouseButtonCapability,
 	isHyprlandCursorProviderActive,
 	parseHyprlandCursorPosition,
 	resolveHyprlandCursorCaptureEpochMs,
+	startEvdevButtonCapture,
 	startHyprlandCursorProvider,
 	stopHyprlandCursorProvider,
 } from "./hyprland";
@@ -79,8 +83,8 @@ describe("Hyprland cursor provider", () => {
 		expect(parseHyprlandCursorPosition("not json")).toBeNull();
 	});
 
-	it("applies the measured Hyprland media timeline correction", () => {
-		expect(resolveHyprlandCursorCaptureEpochMs(10_000)).toBe(9_700);
+	it("starts cursor telemetry at the media timeline boundary", () => {
+		expect(resolveHyprlandCursorCaptureEpochMs(10_000)).toBe(10_000);
 	});
 
 	it("polls serially and stops without publishing a late response", async () => {
@@ -186,5 +190,73 @@ describe("Hyprland cursor provider", () => {
 		resolvePendingQuery(null);
 		await vi.advanceTimersByTimeAsync(0);
 		expect(isHyprlandCursorProviderActive()).toBe(false);
+	});
+});
+
+describe("Hyprland mouse buttons", () => {
+	it("recognizes a left button bit in a 64-bit capability word", () => {
+		expect(hasMouseButtonCapability("10000 0 0 0 0")).toBe(true);
+		expect(hasMouseButtonCapability("ffffffffffffffff 0 0 0 0")).toBe(true);
+		expect(hasMouseButtonCapability("0 0 0 0 0")).toBe(false);
+	});
+
+	it("keeps partial input events until the next device read", () => {
+		const press = Buffer.alloc(24);
+		press.writeUInt16LE(1, 16);
+		press.writeUInt16LE(0x110, 18);
+		press.writeInt32LE(1, 20);
+		const release = Buffer.from(press);
+		release.writeInt32LE(0, 20);
+
+		const first = decodeEvdevButtonChunk(Buffer.alloc(0), press.subarray(0, 11));
+		expect(first.events).toEqual([]);
+		const second = decodeEvdevButtonChunk(
+			first.pending,
+			Buffer.concat([press.subarray(11), release]),
+		);
+		expect(second.events).toEqual([
+			{ button: 1, pressed: true },
+			{ button: 1, pressed: false },
+		]);
+		expect(second.pending).toHaveLength(0);
+	});
+
+	it("does not overlap reads when a device callback is delayed", async () => {
+		vi.useFakeTimers();
+		const onMouseDown = vi.fn();
+		const onMouseUp = vi.fn();
+		const read = vi.fn();
+		const close = vi.fn((_fd, callback) => callback(null));
+		const fsApi = {
+			open: vi.fn((_path, _flags, callback) => callback(null, 42)),
+			read,
+			close,
+		} as unknown as typeof fs;
+		const stop = startEvdevButtonCapture(
+			{ onMouseDown, onMouseUp },
+			{
+				devicePaths: ["/dev/input/event-test"],
+				fsApi,
+				platform: "linux",
+				env: waylandEnv,
+				pollIntervalMs: 10,
+			},
+		);
+		try {
+			await vi.advanceTimersByTimeAsync(35);
+			expect(read).toHaveBeenCalledTimes(1);
+			const buffer = read.mock.calls[0][1] as Buffer;
+			buffer.writeUInt16LE(1, 16);
+			buffer.writeUInt16LE(0x110, 18);
+			buffer.writeInt32LE(1, 20);
+			read.mock.calls[0][5](null, 24, buffer);
+			expect(onMouseDown).toHaveBeenCalledWith(1);
+			await vi.advanceTimersByTimeAsync(10);
+			expect(read).toHaveBeenCalledTimes(2);
+		} finally {
+			stop();
+			vi.useRealTimers();
+		}
+		expect(close).toHaveBeenCalledWith(42, expect.any(Function));
 	});
 });

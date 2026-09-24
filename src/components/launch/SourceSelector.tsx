@@ -1,4 +1,5 @@
-import { AppWindowIcon, CaretUpIcon, MonitorIcon } from "@phosphor-icons/react";
+import { ToggleButton } from "@heroui/react";
+import { AppWindowIcon, CaretUpIcon, MonitorIcon } from "@/components/ui/icons";
 import * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -54,11 +55,12 @@ export const SourceSelectorContent = ({
 	const renderSourceItem = (source: DesktopSource, index: number) => {
 		const isSelected = selectedSource === source.name;
 		return (
-			<button
+			<ToggleButton
+				variant="ghost"
+				isSelected={isSelected}
 				key={`${source.id}-${index}`}
-				type="button"
 				className={cn(
-					"source-selector-item group min-h-[46px] w-full rounded-[11px] px-3 py-2.5 text-left font-medium flex items-center justify-start gap-3",
+					"source-selector-item group min-h-[46px] w-full px-3 py-2.5 text-left flex items-center justify-start gap-3",
 					isSelected && "source-selector-item-selected",
 				)}
 				onClick={() => onSourceSelect(source)}
@@ -94,7 +96,7 @@ export const SourceSelectorContent = ({
 							: t("recording.window")}
 					</div>
 				</div>
-			</button>
+			</ToggleButton>
 		);
 	};
 
@@ -156,7 +158,7 @@ export const SourceSelectorContent = ({
 
 /**
  * SourceSelector - A rich source selection component with thumbnails
- * Uses Radix UI Popover for positioning and accessibility
+ * Uses the shared HeroUI popover for positioning and accessibility
  */
 export const SourceSelector = React.memo(function SourceSelector({
 	screenSources: propsScreenSources,
@@ -292,14 +294,12 @@ export const SourceSelector = React.memo(function SourceSelector({
 		)
 	) : (
 		<Button
-			variant="outline"
+			variant="ghost"
 			size="lg"
 			onPointerEnter={prefetchSources}
 			onFocusCapture={prefetchSources}
 			className={cn(
-				"group gap-2 px-3 min-w-0 max-w-[180px] rounded-[11px] font-medium text-[12px] [ -webkit-app-region:no-drag ] shrink-0",
-				"border-[#2a2a34] bg-[#1a1a22] text-[#eeeef2] hover:border-[#3e3e4c] hover:bg-[#20202a] transition-all",
-				"data-[state=open]:border-[#3e3e4c] data-[state=open]:bg-[#20202a]",
+				"group gap-2 px-3 min-w-0 max-w-[180px] [ -webkit-app-region:no-drag ] shrink-0",
 			)}
 			title={selectedSource}
 		>
@@ -320,7 +320,7 @@ export const SourceSelector = React.memo(function SourceSelector({
 	const { onMouseEnter } = useHudInteraction();
 
 	return (
-		<Popover open={open} onOpenChange={onOpenChange} modal={false}>
+		<Popover open={open} onOpenChange={onOpenChange} modal={true}>
 			<PopoverTrigger asChild>{trigger}</PopoverTrigger>
 			<PopoverContent
 				className="launch-theme w-80 p-0 source-selector-popover"

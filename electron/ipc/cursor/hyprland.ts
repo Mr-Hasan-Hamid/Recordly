@@ -1,7 +1,6 @@
-import fs from "node:fs";
+import fs, { readdirSync, readFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import { readdirSync, readFileSync } from "node:fs";
 import { resolveLinuxWindowSystem } from "../../linuxWindowSystem";
 import { CURSOR_SAMPLE_INTERVAL_MS } from "../constants";
 import { linuxCursorScreenPoint, setLinuxCursorScreenPoint } from "../state";
@@ -9,12 +8,9 @@ import { linuxCursorScreenPoint, setLinuxCursorScreenPoint } from "../state";
 const MAX_RESPONSE_BYTES = 4096;
 const REQUEST_TIMEOUT_MS = 250;
 const PROVIDER_FRESHNESS_INTERVALS = 3;
-// EXPERIMENTO: offset zerado para medir o desalinhamento real entre a
-// telemetria do cursor e o início do vídeo (hipótese: a telemetria inicia
-// antes da captura, pois o seletor do portal bloqueia o getUserMedia após
-// a contagem). Original do upstream: 300.
+// The portal selection finishes before recording starts, so there is no
+// additional cursor-to-video offset to apply.
 export const HYPRLAND_CURSOR_MEDIA_OFFSET_MS = 0;
-let lastDebugPosLogAt = 0;
 
 type CursorPoint = { x: number; y: number };
 type QueryCursorPoint = (socketPath: string) => Promise<CursorPoint | null>;
@@ -135,10 +131,6 @@ export async function startHyprlandCursorProvider(options?: {
 		options?.onPoint ??
 		((point: CursorPoint) => {
 			const nowMs = Date.now();
-			if (nowMs - lastDebugPosLogAt > 500) {
-				lastDebugPosLogAt = nowMs;
-				console.log(`[REC-DEBUG] POS ${point.x},${point.y} at ${nowMs}`);
-			}
 			setLinuxCursorScreenPoint({
 				...point,
 				updatedAt: nowMs,
@@ -221,7 +213,11 @@ export function hasMouseButtonCapability(keyCapabilities: string): boolean {
 	if (!word) {
 		return false;
 	}
-	return ((Number.parseInt(word, 16) >>> (BTN_LEFT % 64)) & 1) === 1;
+	try {
+		return ((BigInt(`0x${word}`) >> BigInt(BTN_LEFT % 64)) & 1n) === 1n;
+	} catch {
+		return false;
+	}
 }
 
 export type EvdevButtonEvent = { button: 1 | 2 | 3; pressed: boolean };
@@ -242,6 +238,15 @@ export function parseEvdevButtonEvents(buffer: Buffer): EvdevButtonEvent[] {
 		}
 	}
 	return events;
+}
+
+export function decodeEvdevButtonChunk(pending: Buffer, chunk: Buffer) {
+	const data = Buffer.concat([pending, chunk]);
+	const completeLength = Math.floor(data.length / INPUT_EVENT_SIZE) * INPUT_EVENT_SIZE;
+	return {
+		events: parseEvdevButtonEvents(data.subarray(0, completeLength)),
+		pending: Buffer.from(data.subarray(completeLength)),
+	};
 }
 
 function listMouseEventDevices(): string[] {
@@ -265,21 +270,34 @@ function listMouseEventDevices(): string[] {
 	}
 }
 
-export function startEvdevButtonCapture(handlers: {
-	onMouseDown: (button: 1 | 2 | 3) => void;
-	onMouseUp: () => void;
-}): () => void {
+export function startEvdevButtonCapture(
+	handlers: {
+		onMouseDown: (button: 1 | 2 | 3) => void;
+		onMouseUp: () => void;
+	},
+	options?: {
+		devicePaths?: string[];
+		fsApi?: typeof fs;
+		platform?: NodeJS.Platform;
+		env?: NodeJS.ProcessEnv;
+		pollIntervalMs?: number;
+	},
+): () => void {
 	// Only Hyprland/Wayland sessions need raw evdev buttons: on X11 the uiohook
 	// already captures clicks, and double-counting them corrupts the telemetry.
-	if (process.platform !== "linux" || !getHyprlandRequestSocketPath(process.env)) {
-		return () => {
-			console.log("[REC-DEBUG] evdev capture skipped (no Hyprland session)");
-		};
+	if (
+		(options?.platform ?? process.platform) !== "linux" ||
+		!getHyprlandRequestSocketPath(options?.env ?? process.env)
+	) {
+		return () => undefined;
 	}
-	const stoppers = listMouseEventDevices().map((devicePath) => {
+	const fsApi = options?.fsApi ?? fs;
+	const stoppers = (options?.devicePaths ?? listMouseEventDevices()).map((devicePath) => {
 		let fd: number | null = null;
 		let timer: NodeJS.Timeout | null = null;
 		let stopped = false;
+		let readInFlight = false;
+		let pendingBytes = Buffer.alloc(0);
 		const buffer = Buffer.alloc(256);
 		const stop = () => {
 			stopped = true;
@@ -290,45 +308,55 @@ export function startEvdevButtonCapture(handlers: {
 			if (fd !== null) {
 				const fdToClose = fd;
 				fd = null;
-				fs.close(fdToClose, () => {
-					console.log(`[REC-DEBUG] evdev closed: ${devicePath}`);
-				});
+				fsApi.close(fdToClose, () => undefined);
 			}
 		};
-		fs.open(devicePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK, (openError, openedFd) => {
-			if (openError || openedFd === undefined) {
-				console.log("[REC-DEBUG] evdev open FAILED:", devicePath, openError?.message);
-				stop();
-				return;
-			}
-			if (stopped) {
-				// stop() ran while fs.open was in flight — close the descriptor
-				// immediately instead of leaking it.
-				fs.closeSync(openedFd);
-				console.log("[REC-DEBUG] evdev closed (stop before open):", devicePath);
-				return;
-			}
-			fd = openedFd;
-			console.log("[REC-DEBUG] evdev fd opened:", devicePath);
-			timer = setInterval(() => {
-				if (stopped || fd === null) {
-					clearInterval(timer ?? undefined);
+		fsApi.open(
+			devicePath,
+			fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+			(openError, openedFd) => {
+				if (openError || openedFd === undefined) {
+					if (openError?.code === "EACCES") {
+						console.warn(
+							"[CursorTelemetry] Mouse click capture needs access to /dev/input.",
+						);
+					}
+					stop();
 					return;
 				}
-				fs.read(fd, buffer, 0, buffer.length, null, (readError, bytesRead) => {
-					if (stopped || readError || bytesRead <= 0) {
+				if (stopped) {
+					// stop() ran while fs.open was in flight — close the descriptor
+					// immediately instead of leaking it.
+					fsApi.close(openedFd, () => undefined);
+					return;
+				}
+				fd = openedFd;
+				timer = setInterval(() => {
+					if (stopped || fd === null || readInFlight) {
 						return;
 					}
-					for (const event of parseEvdevButtonEvents(buffer.subarray(0, bytesRead))) {
-						if (event.pressed) {
-							handlers.onMouseDown(event.button);
-						} else {
-							handlers.onMouseUp();
+					readInFlight = true;
+					fsApi.read(fd, buffer, 0, buffer.length, null, (readError, bytesRead) => {
+						readInFlight = false;
+						if (stopped || readError || bytesRead <= 0) {
+							return;
 						}
-					}
-				});
-			}, EVDEV_POLL_INTERVAL_MS);
-		});
+						const decoded = decodeEvdevButtonChunk(
+							pendingBytes,
+							buffer.subarray(0, bytesRead),
+						);
+						pendingBytes = decoded.pending;
+						for (const event of decoded.events) {
+							if (event.pressed) {
+								handlers.onMouseDown(event.button);
+							} else {
+								handlers.onMouseUp();
+							}
+						}
+					});
+				}, options?.pollIntervalMs ?? EVDEV_POLL_INTERVAL_MS);
+			},
+		);
 		return stop;
 	});
 

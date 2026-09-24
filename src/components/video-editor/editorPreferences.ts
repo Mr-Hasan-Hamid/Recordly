@@ -17,9 +17,6 @@ type PersistedEditorControls = Pick<
 	| "backgroundBlur"
 	| "zoomMotionBlur"
 	| "zoomMotionBlurTuning"
-	| "zoomTemporalMotionBlur"
-	| "zoomMotionBlurSampleCount"
-	| "zoomMotionBlurShutterFraction"
 	| "connectZooms"
 	| "zoomInDurationMs"
 	| "zoomInOverlapMs"
@@ -68,7 +65,7 @@ type PartialEditorControls = Partial<PersistedEditorControls>;
 
 type PresetAutoCaptionSettings = ProjectEditorState["autoCaptionSettings"];
 type PresetCropRegion = ProjectEditorState["cropRegion"];
-type PresetWebcamSettings = Omit<ProjectEditorState["webcam"], "sourcePath">;
+type PresetWebcamSettings = Omit<ProjectEditorState["webcam"], "sourcePath" | "visibleRanges">;
 
 export interface EditorPresetSnapshot extends Omit<PersistedEditorControls, "webcam"> {
 	borderRadiusUnit: "percent";
@@ -108,9 +105,6 @@ export const DEFAULT_EDITOR_PREFERENCES: EditorPreferences = {
 	backgroundBlur: DEFAULT_EDITOR_CONTROLS.backgroundBlur,
 	zoomMotionBlur: DEFAULT_EDITOR_CONTROLS.zoomMotionBlur,
 	zoomMotionBlurTuning: DEFAULT_EDITOR_CONTROLS.zoomMotionBlurTuning,
-	zoomTemporalMotionBlur: DEFAULT_EDITOR_CONTROLS.zoomTemporalMotionBlur,
-	zoomMotionBlurSampleCount: DEFAULT_EDITOR_CONTROLS.zoomMotionBlurSampleCount,
-	zoomMotionBlurShutterFraction: DEFAULT_EDITOR_CONTROLS.zoomMotionBlurShutterFraction,
 	connectZooms: DEFAULT_EDITOR_CONTROLS.connectZooms,
 	zoomInDurationMs: DEFAULT_EDITOR_CONTROLS.zoomInDurationMs,
 	zoomInOverlapMs: DEFAULT_EDITOR_CONTROLS.zoomInOverlapMs,
@@ -220,7 +214,11 @@ function normalizeEditorPresetSnapshot(candidate: unknown): EditorPresetSnapshot
 		normalizedPreferences,
 		normalizedPreferences,
 	);
-	const { sourcePath: _sourcePath, ...webcam } = normalizedControls.webcam;
+	const {
+		sourcePath: _sourcePath,
+		visibleRanges: _visibleRanges,
+		...webcam
+	} = normalizedControls.webcam;
 
 	return {
 		...normalizedControls,
@@ -378,9 +376,6 @@ function normalizeEditorControls(
 		backgroundBlur: normalized.backgroundBlur,
 		zoomMotionBlur: normalized.zoomMotionBlur,
 		zoomMotionBlurTuning: normalized.zoomMotionBlurTuning,
-		zoomTemporalMotionBlur: normalized.zoomTemporalMotionBlur,
-		zoomMotionBlurSampleCount: normalized.zoomMotionBlurSampleCount,
-		zoomMotionBlurShutterFraction: normalized.zoomMotionBlurShutterFraction,
 		connectZooms: normalized.connectZooms,
 		zoomInDurationMs: normalized.zoomInDurationMs,
 		zoomInOverlapMs: normalized.zoomInOverlapMs,

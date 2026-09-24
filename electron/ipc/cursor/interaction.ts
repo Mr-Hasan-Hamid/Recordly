@@ -17,10 +17,7 @@ import type {
 	UiohookLike,
 	UiohookModuleNamespace,
 } from "../types";
-import {
-	isHyprlandCursorProviderActive,
-	startEvdevButtonCapture,
-} from "./hyprland";
+import { isHyprlandCursorProviderActive, startEvdevButtonCapture } from "./hyprland";
 import {
 	getCursorCaptureElapsedMs,
 	getHookCursorScreenPoint,
@@ -287,8 +284,7 @@ export async function startInteractionCapture() {
 		}
 
 		if (!hook || typeof hook.on !== "function" || typeof hook.start !== "function") {
-			console.log("[CursorTelemetry] hook unusable — aborting interaction capture");
-			stopEvdevCapture();
+			console.warn("[CursorTelemetry] Global interaction hook unavailable.");
 			return;
 		}
 
@@ -353,7 +349,6 @@ export async function startInteractionCapture() {
 
 		hook.start();
 	} catch (error) {
-		stopEvdevCapture();
 		if (!hasLoggedInteractionHookFailure) {
 			setHasLoggedInteractionHookFailure(true);
 			console.warn("[CursorTelemetry] Global interaction capture unavailable:", error);

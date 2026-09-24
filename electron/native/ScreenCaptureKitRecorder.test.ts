@@ -8,6 +8,16 @@ const recorderSource = readFileSync(
 );
 
 describe("ScreenCaptureKitRecorder finalization coordination", () => {
+	it("finalizes on parent pipe closure as well as an explicit stop, exactly once", () => {
+		const commandLoop = recorderSource.slice(
+			recorderSource.indexOf("while let input = readLine"),
+		);
+		expect(commandLoop).toMatch(
+			/if input == "stop"\s*\{\s*break\s*\}\s*\}\s*\/\/.*?service\.stop\(\)/s,
+		);
+		expect(commandLoop.match(/service\.stop\(\)/g)).toHaveLength(1);
+	});
+
 	it("marks manual stops as participants in the shared finalization", () => {
 		expect(recorderSource).toContain("finalizeCapture(interactive: true)");
 		expect(recorderSource).toContain("finalization.outputResult.get()");
@@ -82,5 +92,21 @@ describe("ScreenCaptureKitRecorder window capture", () => {
 		);
 		expect(recorderSource).toContain("try await activeStream.updateContentFilter(filter)");
 		expect(recorderSource).toContain("self.windowCropRect = cropRect");
+	});
+});
+
+
+describe("ScreenCaptureKitRecorder first frame timing", () => {
+	const callback = recorderSource.slice(recorderSource.indexOf("func stream(_ stream:"), recorderSource.indexOf("func stream(_ stream:") + 5000);
+	it("validates a complete frame and writer readiness before setting time zero", () => {
+		const clock = callback.indexOf("adjustedPresentationTime(for:");
+		expect(clock).toBeGreaterThan(callback.indexOf("status == .complete"));
+		expect(clock).toBeGreaterThan(callback.indexOf("videoInput.isReadyForMoreMediaData"));
+	});
+	it("resets the origin after a rejected first frame and gates audio on accepted video", () => {
+		expect(callback).toMatch(/else if frameCount == 0\s*\{[^}]*firstSampleTime = \.zero/);
+		const audioGuard = callback.indexOf("guard frameCount > 0,");
+		expect(audioGuard).toBeGreaterThan(0);
+		expect(audioGuard).toBeLessThan(callback.indexOf("if outputType == .audio"));
 	});
 });

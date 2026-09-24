@@ -14,10 +14,7 @@ import {
 } from "electron";
 import { getHudCaptureExcludedProcessIds } from "../../../src/lib/hudCaptureProtection";
 import { showCursor } from "../../cursorHider";
-import {
-	getHudOverlayCaptureProtectionEnabled,
-	reassertHudOverlayCaptureProtection,
-} from "../../windows";
+import { getHudOverlayCaptureProtectionEnabled, beginHudCaptureProtection } from "../../windows";
 import { ALLOW_RECORDLY_WINDOW_CAPTURE } from "../constants";
 import { startWindowBoundsCapture, stopWindowBoundsCapture } from "../cursor/bounds";
 import {
@@ -411,9 +408,8 @@ export function registerRecordingHandlers(
 	ipcMain.handle(
 		"start-native-screen-recording",
 		async (_, source: SelectedSource, options?: NativeMacRecordingOptions) => {
-			// Capture starts before the renderer publishes its recording-state
-			// transition, so protect the HUD at the actual capture boundary.
-			reassertHudOverlayCaptureProtection();
+			// Protect the HUD at the capture boundary, before the renderer publishes recording state.
+			beginHudCaptureProtection();
 			const visibleWindowBounds = source.id?.startsWith("window:")
 				? await bringSelectedWindowForward(source)
 				: null;
@@ -538,6 +534,9 @@ export function registerRecordingHandlers(
 						);
 						config.captureMic = true;
 						config.micOutputPath = tempMicPath;
+						if (options.microphoneDeviceId) {
+							config.micDeviceId = options.microphoneDeviceId;
+						}
 						if (options.microphoneLabel) {
 							config.micDeviceName = options.microphoneLabel;
 						}

@@ -20,14 +20,11 @@ import {
 	BASE_PREVIEW_HEIGHT,
 	BASE_PREVIEW_WIDTH,
 	DEFAULT_WEBCAM_ROUNDNESS,
-	ZOOM_DEPTH_SCALES,
 } from "@/components/video-editor/types";
 import { DEFAULT_FOCUS } from "@/components/video-editor/videoPlayback/constants";
 import {
 	type CursorFollowCameraState,
-	computeCursorFollowFocus,
 	createCursorFollowCameraState,
-	SNAP_TO_EDGES_RATIO_AUTO,
 } from "@/components/video-editor/videoPlayback/cursorFollowCamera";
 import {
 	DEFAULT_CURSOR_CONFIG,
@@ -45,8 +42,9 @@ import {
 	type SpringState,
 	stepSpringValue,
 } from "@/components/video-editor/videoPlayback/motionSmoothing";
-import { getWebcamMediaTargetTimeSeconds } from "@/components/video-editor/videoPlayback/webcamSync";
-import { findDominantRegion } from "@/components/video-editor/videoPlayback/zoomRegionUtils";
+import { getSceneEffectMetrics } from "@/components/video-editor/videoPlayback/sceneEffects";
+import { resolveSceneZoomTarget } from "@/components/video-editor/videoPlayback/sceneMotion";
+import { getWebcamMediaTargetTimeSeconds, isWebcamVisibleAtSourceTime } from "@/components/video-editor/videoPlayback/webcamSync";
 import {
 	applyZoomTransform,
 	computeZoomTransform,
@@ -77,11 +75,10 @@ import { renderAnnotations } from "./annotationRenderer";
 import { renderCaptions } from "./captionRenderer";
 import { ForwardFrameSource } from "./forwardFrameSource";
 import { resolveMediaElementSource } from "./localMediaSource";
-import { buildTemporalSamplePlanUs, getTemporalMotionBlurConfig } from "./temporalMotionBlur";
 
-const TEMPORAL_ZOOM_MOTION_BLUR_ENABLED = false;
 
 interface FrameRenderConfig {
+	timelineEffects?: boolean;
 	width: number;
 	height: number;
 	preferredRenderBackend?: "webgl" | "webgpu";
@@ -92,9 +89,6 @@ interface FrameRenderConfig {
 	backgroundBlur: number;
 	zoomMotionBlur?: number;
 	zoomMotionBlurTuning?: ZoomMotionBlurTuning;
-	zoomTemporalMotionBlur?: number;
-	zoomMotionBlurSampleCount?: number | null;
-	zoomMotionBlurShutterFraction?: number | null;
 	connectZooms?: boolean;
 	zoomInDurationMs?: number;
 	zoomInOverlapMs?: number;
@@ -198,11 +192,6 @@ interface LayoutCache {
 	};
 }
 
-interface RenderSnapshot {
-	timeMs: number;
-	sceneTransform: { scale: number; x: number; y: number };
-}
-
 function createAnimationState(): AnimationState {
 	return {
 		scale: 1,
@@ -246,8 +235,6 @@ export class FrameRenderer {
 	private shadowCtx: CanvasRenderingContext2D | null = null;
 	private compositeCanvas: HTMLCanvasElement | null = null;
 	private compositeCtx: CanvasRenderingContext2D | null = null;
-	private temporalAccumulationCanvas: HTMLCanvasElement | null = null;
-	private temporalAccumulationCtx: CanvasRenderingContext2D | null = null;
 	private backgroundForwardFrameSource: ForwardFrameSource | null = null;
 	private backgroundForwardFrameSourceUrl: string | null = null;
 	private backgroundForwardFrameDurationSec: number | null = null;
@@ -469,19 +456,6 @@ export class FrameRenderer {
 
 		if (!this.compositeCtx) {
 			throw new Error("Failed to get 2D context for composite canvas");
-		}
-
-		this.temporalAccumulationCanvas = document.createElement("canvas");
-		this.temporalAccumulationCanvas.width = this.config.width;
-		this.temporalAccumulationCanvas.height = this.config.height;
-		this.temporalAccumulationCtx = configureHighQuality2DContext(
-			this.temporalAccumulationCanvas.getContext("2d", {
-				willReadFrequently: true,
-			}),
-		);
-
-		if (!this.temporalAccumulationCtx) {
-			throw new Error("Failed to get 2D context for temporal accumulation canvas");
 		}
 
 		// Setup shadow canvas if needed
@@ -1405,17 +1379,27 @@ export class FrameRenderer {
 	}
 
 	async renderFrame(
-		videoFrame: VideoFrame,
+		videoFrame: VideoFrame | null,
 		timestamp: number,
 		cursorTimestamp = timestamp,
-		frameDurationUs?: number,
+		_frameDurationUs?: number,
 		backgroundTimelineTimestamp = timestamp,
 	): Promise<void> {
-		if (!this.app || !this.videoContainer || !this.cameraContainer) {
+		if (!this.app || !this.videoContainer || !this.cameraContainer || !this.compositeCtx) {
 			throw new Error("Renderer not initialized");
 		}
 
 		this.currentVideoTime = timestamp / 1000000;
+		this.cameraContainer.visible = videoFrame !== null;
+		if (!videoFrame) {
+			this.updateAnimationState(backgroundTimelineTimestamp / 1000, cursorTimestamp / 1000);
+			if (this.backgroundForwardFrameSource || this.backgroundVideoElement) {
+				await this.syncBackgroundFrame(backgroundTimelineTimestamp / 1_000_000);
+			}
+			this.app.renderer.render(this.app.stage);
+			this.compositeWithShadows(false);
+			return;
+		}
 
 		// Create or update video sprite from VideoFrame
 		if (!this.videoSprite) {
@@ -1440,62 +1424,6 @@ export class FrameRenderer {
 			return;
 		}
 
-		const temporalSnapshot =
-			TEMPORAL_ZOOM_MOTION_BLUR_ENABLED &&
-			(this.config.zoomTemporalMotionBlur ?? 0) > 0 &&
-			typeof frameDurationUs === "number" &&
-			frameDurationUs > 0
-				? await this.renderTemporalMotionBlurFrame(
-						timestamp,
-						cursorTimestamp,
-						backgroundTimelineTimestamp,
-						frameDurationUs,
-						layoutCache,
-					)
-				: null;
-
-		if (temporalSnapshot) {
-			if (
-				this.config.annotationRegions &&
-				this.config.annotationRegions.length > 0 &&
-				this.compositeCtx
-			) {
-				const scaleX = this.config.width / BASE_PREVIEW_WIDTH;
-				const scaleY = this.config.height / BASE_PREVIEW_HEIGHT;
-				const scaleFactor = (scaleX + scaleY) / 2;
-
-				await renderAnnotations(
-					this.compositeCtx,
-					this.config.annotationRegions,
-					this.config.width,
-					this.config.height,
-					temporalSnapshot.timeMs,
-					scaleFactor,
-					undefined,
-					temporalSnapshot.sceneTransform,
-					this.layoutCache?.maskRect,
-				);
-			}
-
-			if (
-				this.config.autoCaptions &&
-				this.config.autoCaptions.length > 0 &&
-				this.config.autoCaptionSettings &&
-				this.compositeCtx
-			) {
-				renderCaptions(
-					this.compositeCtx,
-					this.config.autoCaptions,
-					this.config.autoCaptionSettings,
-					this.config.width,
-					this.config.height,
-					temporalSnapshot.timeMs,
-				);
-			}
-
-			return;
-		}
-
 		if (this.webcamForwardFrameSource || this.webcamVideoElement) {
 			const targetTime = Math.max(0, this.currentVideoTime);
 			await this.syncWebcamFrame(targetTime);
@@ -1506,7 +1434,9 @@ export class FrameRenderer {
 			await this.syncBackgroundFrame(Math.max(0, backgroundTimelineTimestamp / 1_000_000));
 		}
 
-		const timeMs = this.currentVideoTime * 1000;
+		const timeMs = this.config.timelineEffects
+			? backgroundTimelineTimestamp / 1000
+			: timestamp / 1000;
 		const cursorTimeMs = cursorTimestamp / 1000;
 
 		if (this.cursorOverlay) {
@@ -1522,7 +1452,7 @@ export class FrameRenderer {
 		const TICKS_PER_FRAME = 1;
 
 		for (let i = 0; i < TICKS_PER_FRAME; i++) {
-			this.updateAnimationState(timeMs);
+			this.updateAnimationState(timeMs, cursorTimeMs);
 		}
 
 		applyZoomTransform({
@@ -1595,7 +1525,7 @@ export class FrameRenderer {
 				this.config.autoCaptionSettings,
 				this.config.width,
 				this.config.height,
-				timeMs,
+				timestamp / 1000,
 			);
 		}
 	}
@@ -1663,50 +1593,21 @@ export class FrameRenderer {
 		};
 	}
 
-	private updateAnimationState(timeMs: number): number {
+	/** Advance the export camera from the shared scene target at this media time. */
+	private updateAnimationState(timeMs: number, cursorTimeMs = timeMs): number {
 		if (!this.cameraContainer || !this.layoutCache) return 0;
 
-		const { region, strength, blendedScale } = findDominantRegion(
-			this.config.zoomRegions,
+		const target = resolveSceneZoomTarget({
+			zoomRegions: this.config.zoomRegions,
 			timeMs,
-			{
-				connectZooms: this.config.connectZooms,
-				zoomInDurationMs: this.config.zoomInDurationMs,
-				zoomOutDurationMs: this.config.zoomOutDurationMs,
-			},
-		);
-
-		const defaultFocus = DEFAULT_FOCUS;
-		let targetScaleFactor = 1;
-		let targetFocus = { ...defaultFocus };
-		let targetProgress = 0;
-
-		if (region && strength > 0) {
-			const zoomScale = blendedScale ?? ZOOM_DEPTH_SCALES[region.depth];
-
-			// Cursor follow: use cursor-follow camera for non-manual zoom regions
-			let regionFocus = region.focus;
-			if (
-				!this.config.zoomClassicMode &&
-				region.mode !== "manual" &&
-				this.config.cursorTelemetry &&
-				this.config.cursorTelemetry.length > 0
-			) {
-				regionFocus = computeCursorFollowFocus(
-					this.cursorFollowCamera,
-					this.config.cursorTelemetry,
-					timeMs,
-					zoomScale,
-					strength,
-					region.focus,
-					{ snapToEdgesRatio: SNAP_TO_EDGES_RATIO_AUTO },
-				);
-			}
-
-			targetScaleFactor = zoomScale;
-			targetFocus = regionFocus;
-			targetProgress = strength;
-		}
+			cursorTimeMs,
+			connectZooms: this.config.connectZooms,
+			zoomInDurationMs: this.config.zoomInDurationMs,
+			zoomOutDurationMs: this.config.zoomOutDurationMs,
+			zoomClassicMode: this.config.zoomClassicMode,
+			cursorTelemetry: this.config.cursorTelemetry,
+			cursorFollowCamera: this.cursorFollowCamera,
+		});
 
 		const state = this.animationState;
 
@@ -1714,10 +1615,10 @@ export class FrameRenderer {
 		const prevX = state.x;
 		const prevY = state.y;
 
-		state.scale = targetScaleFactor;
-		state.focusX = targetFocus.cx;
-		state.focusY = targetFocus.cy;
-		state.progress = targetProgress;
+		state.scale = target.scale;
+		state.focusX = target.focus.cx;
+		state.focusY = target.focus.cy;
+		state.progress = target.progress;
 
 		const projectedTransform = computeZoomTransform({
 			stageSize: this.layoutCache.stageSize,
@@ -1775,141 +1676,18 @@ export class FrameRenderer {
 		);
 	}
 
-	private async renderSceneSample(
-		timestamp: number,
-		cursorTimestamp: number,
-		backgroundTimelineTimestamp: number,
-		layoutCache: LayoutCache,
-		useVelocityMotionBlur: boolean,
-	): Promise<RenderSnapshot> {
-		if (!this.app || !this.cameraContainer) {
-			throw new Error("Renderer not initialized");
-		}
-
-		this.currentVideoTime = timestamp / 1_000_000;
-
-		if (this.webcamForwardFrameSource || this.webcamVideoElement) {
-			await this.syncWebcamFrame(Math.max(0, this.currentVideoTime));
-		}
-
-		if (this.backgroundForwardFrameSource || this.backgroundVideoElement) {
-			await this.syncBackgroundFrame(Math.max(0, backgroundTimelineTimestamp / 1_000_000));
-		}
-
-		const timeMs = this.currentVideoTime * 1000;
-		const cursorTimeMs = cursorTimestamp / 1000;
-
-		if (this.cursorOverlay) {
-			this.cursorOverlay.update(
-				this.config.cursorTelemetry ?? [],
-				cursorTimeMs,
-				layoutCache.maskRect,
-				this.config.showCursor ?? true,
-				false,
-			);
-		}
-
-		this.updateAnimationState(timeMs);
-
-		applyZoomTransform({
-			cameraContainer: this.cameraContainer,
-			zoomBlurFilter: this.zoomBlurFilter,
-			motionBlurFilter: this.motionBlurFilter,
-			stageSize: layoutCache.stageSize,
-			baseMask: layoutCache.maskRect,
-			zoomScale: this.animationState.scale,
-			zoomProgress: this.animationState.progress,
-			focusX: this.animationState.focusX,
-			focusY: this.animationState.focusY,
-			isPlaying: true,
-			motionBlurAmount: useVelocityMotionBlur ? (this.config.zoomMotionBlur ?? 0) : 0,
-			motionBlurTuning: this.config.zoomMotionBlurTuning,
-			transformOverride: {
-				scale: this.animationState.appliedScale,
-				x: this.animationState.x,
-				y: this.animationState.y,
-			},
-			motionBlurState: this.motionBlurState,
-			frameTimeMs: timeMs,
-		});
-
-		this.app.renderer.render(this.app.stage);
-		this.compositeWithShadows();
-
-		return {
-			timeMs,
-			sceneTransform: {
-				scale: this.animationState.appliedScale,
-				x: this.animationState.x,
-				y: this.animationState.y,
-			},
-		};
-	}
-
-	private async renderTemporalMotionBlurFrame(
-		timestamp: number,
-		cursorTimestamp: number,
-		backgroundTimelineTimestamp: number,
-		frameDurationUs: number,
-		layoutCache: LayoutCache,
-	): Promise<RenderSnapshot | null> {
-		if (!this.compositeCanvas || !this.compositeCtx || !this.temporalAccumulationCtx) {
-			return null;
-		}
-
-		const blurConfig = getTemporalMotionBlurConfig(this.config.zoomTemporalMotionBlur, {
-			sampleCount: this.config.zoomMotionBlurSampleCount,
-			shutterFraction: this.config.zoomMotionBlurShutterFraction,
-		});
-		if (!blurConfig) {
-			return null;
-		}
-
-		const samplePlan = buildTemporalSamplePlanUs(frameDurationUs, blurConfig);
-
-		this.temporalAccumulationCtx.clearRect(0, 0, this.config.width, this.config.height);
-
-		let centerSnapshot: RenderSnapshot | null = null;
-		let lastSnapshot: RenderSnapshot | null = null;
-
-		for (const { offsetUs: sampleOffsetUs, weight } of samplePlan) {
-			const sampleTimestamp = Math.max(0, timestamp + sampleOffsetUs);
-			const sampleCursorTimestamp = Math.max(0, cursorTimestamp + sampleOffsetUs);
-			const sampleBackgroundTimelineTimestamp = Math.max(
-				0,
-				backgroundTimelineTimestamp + sampleOffsetUs,
-			);
-			const snapshot = await this.renderSceneSample(
-				sampleTimestamp,
-				sampleCursorTimestamp,
-				sampleBackgroundTimelineTimestamp,
-				layoutCache,
-				false,
-			);
-			lastSnapshot = snapshot;
-			if (Math.abs(sampleOffsetUs) < 0.0001) {
-				centerSnapshot = snapshot;
-			}
-
-			this.temporalAccumulationCtx.save();
-			this.temporalAccumulationCtx.globalCompositeOperation = "lighter";
-			this.temporalAccumulationCtx.globalAlpha = weight;
-			this.temporalAccumulationCtx.drawImage(this.compositeCanvas, 0, 0);
-			this.temporalAccumulationCtx.restore();
-		}
-		this.compositeCtx.clearRect(0, 0, this.config.width, this.config.height);
-		this.compositeCtx.drawImage(this.temporalAccumulationCanvas!, 0, 0);
-
-		return centerSnapshot ?? lastSnapshot;
-	}
-
-	private compositeWithShadows(): void {
+	private compositeWithShadows(includeWebcam = true): void {
 		if (!this.compositeCanvas || !this.compositeCtx || !this.app) return;
 
 		const videoCanvas = this.app.canvas as HTMLCanvasElement;
 		const ctx = this.compositeCtx;
 		const w = this.compositeCanvas.width;
 		const h = this.compositeCanvas.height;
+		const sceneEffects = getSceneEffectMetrics({
+			viewportWidth: w,
+			backgroundBlur: this.config.backgroundBlur,
+			shadowIntensity: this.config.showShadow ? this.config.shadowIntensity : 0,
+		});
 
 		// Clear composite canvas
 		ctx.clearRect(0, 0, w, h);
@@ -1920,11 +1698,10 @@ export class FrameRenderer {
 		if (this.backgroundSprite) {
 			const bgCanvas = this.backgroundSprite;
 
-			if (this.config.backgroundBlur > 0) {
+			if (sceneEffects.backgroundBlurPx > 0) {
 				ctx.save();
-				const blurPx = this.config.backgroundBlur * 3;
-				const overscan = Math.ceil(blurPx * 2);
-				ctx.filter = `blur(${blurPx}px)`;
+				const overscan = sceneEffects.backgroundOverscanPx;
+				ctx.filter = `blur(${sceneEffects.backgroundBlurPx}px)`;
 				ctx.drawImage(bgCanvas, -overscan, -overscan, w + overscan * 2, h + overscan * 2);
 				ctx.restore();
 			} else {
@@ -1947,17 +1724,7 @@ export class FrameRenderer {
 			shadowCtx.imageSmoothingQuality = "high";
 			shadowCtx.save();
 
-			// Calculate shadow parameters based on intensity (0-1)
-			const intensity = this.config.shadowIntensity;
-			const baseBlur1 = 48 * intensity;
-			const baseBlur2 = 16 * intensity;
-			const baseBlur3 = 8 * intensity;
-			const baseAlpha1 = 0.7 * intensity;
-			const baseAlpha2 = 0.5 * intensity;
-			const baseAlpha3 = 0.3 * intensity;
-			const baseOffset = 12 * intensity;
-
-			shadowCtx.filter = `drop-shadow(0 ${baseOffset}px ${baseBlur1}px rgba(0,0,0,${baseAlpha1})) drop-shadow(0 ${baseOffset / 3}px ${baseBlur2}px rgba(0,0,0,${baseAlpha2})) drop-shadow(0 ${baseOffset / 6}px ${baseBlur3}px rgba(0,0,0,${baseAlpha3}))`;
+			shadowCtx.filter = sceneEffects.shadowFilter;
 			shadowCtx.drawImage(videoCanvas, 0, 0, w, h);
 			shadowCtx.restore();
 			ctx.drawImage(this.shadowCanvas, 0, 0, w, h);
@@ -1965,14 +1732,14 @@ export class FrameRenderer {
 			ctx.drawImage(videoCanvas, 0, 0, w, h);
 		}
 
-		this.drawWebcamOverlay(ctx, w, h);
+		if (includeWebcam) this.drawWebcamOverlay(ctx, w, h);
 	}
 
 	private drawWebcamOverlay(ctx: CanvasRenderingContext2D, width: number, height: number): void {
 		const webcam = this.config.webcam;
 		const webcamDecodedFrame = this.webcamDecodedFrame;
 		const webcamVideo = this.webcamVideoElement;
-		if (!webcam?.enabled || (!webcamDecodedFrame && !webcamVideo)) {
+		if (!webcam?.enabled || !isWebcamVisibleAtSourceTime(webcam, this.currentVideoTime) || (!webcamDecodedFrame && !webcamVideo)) {
 			return;
 		}
 
@@ -2224,8 +1991,6 @@ export class FrameRenderer {
 		this.shadowCtx = null;
 		this.compositeCanvas = null;
 		this.compositeCtx = null;
-		this.temporalAccumulationCanvas = null;
-		this.temporalAccumulationCtx = null;
 		this.backgroundCtx = null;
 		this.closeBackgroundDecodedFrame();
 		this.backgroundForwardFrameSource?.cancel();

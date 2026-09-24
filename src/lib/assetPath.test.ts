@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	getAssetPath,
+	getWallpaperThumbnailUrl,
 	getExportableVideoUrl,
 	getRenderableAssetUrl,
 	getRenderableVideoUrl,
@@ -124,3 +125,14 @@ describe("getExportableVideoUrl", () => {
 		);
 	});
 });
+
+ it("requests a cached thumbnail for a dev wallpaper instead of loading the original", async () => {
+  const generateWallpaperThumbnail = vi.fn(async () => ({ success: true, data: new Uint8Array([255, 216, 255]) }));
+  vi.stubGlobal("window", { location: { protocol: "http:" }, electronAPI: { getAssetBasePath: async () => null, generateWallpaperThumbnail } });
+  const url = await getWallpaperThumbnailUrl("/wallpapers/thumbnail-regression.jpg");
+  expect(url).toBe("data:image/jpeg;base64,/9j/");
+  expect(generateWallpaperThumbnail).toHaveBeenCalledWith("/wallpapers/thumbnail-regression.jpg");
+  await expect(getWallpaperThumbnailUrl("/wallpapers/thumbnail-regression.jpg")).resolves.toBe(url);
+  expect(generateWallpaperThumbnail).toHaveBeenCalledTimes(1);
+  vi.unstubAllGlobals();
+ });

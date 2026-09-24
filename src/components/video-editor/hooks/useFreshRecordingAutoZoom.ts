@@ -21,7 +21,7 @@ interface UseFreshRecordingAutoZoomParams {
 	zoomRegions: ZoomRegion[];
 	setZoomRegions: Dispatch<SetStateAction<ZoomRegion[]>>;
 	setAutoSuggestZoomsTrigger: Dispatch<SetStateAction<number>>;
-	videoPlaybackRef: RefObject<VideoPlaybackRef>;
+	videoPlaybackRef: RefObject<VideoPlaybackRef | null>;
 	autoSuggestedVideoPathRef: MutableRefObject<string | null>;
 	pendingFreshRecordingAutoZoomPathRef: MutableRefObject<string | null>;
 	pendingFreshRecordingAutoSuggestTimeoutRef: MutableRefObject<number | null>;

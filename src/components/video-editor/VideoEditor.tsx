@@ -1,5 +1,5 @@
 /* biome-ignore-all lint/correctness/useExhaustiveDependencies: setters returned by the editor's domain-state hooks are stable React dispatchers. */
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/contexts/I18nContext";
 import { useShortcuts } from "@/contexts/ShortcutsContext";
 import { getAspectRatioValue } from "@/utils/aspectRatioUtils";
@@ -92,9 +92,34 @@ export default function VideoEditor() {
 		applySessionPresentation,
 	} = ui;
 	const effectiveShowCursor = sessionShowCursorOverride ?? showCursor;
-	const headerLeftControlsPaddingClass = appPlatform === "darwin" ? "pl-[76px]" : "";
+	const [trafficLightsVisible, setTrafficLightsVisible] = useState(false);
+	useEffect(() => {
+		let active = true;
+		let receivedEvent = false;
+		const unsubscribe = window.electronAPI.onWindowChromeChanged?.((chrome) => {
+			receivedEvent = true;
+			if (active) setTrafficLightsVisible(chrome.trafficLightsVisible);
+		});
+		void window.electronAPI
+			.getWindowChrome?.()
+			.then((chrome) => {
+				if (active && !receivedEvent) setTrafficLightsVisible(chrome.trafficLightsVisible);
+			})
+			.catch(() => {
+				/* Window controls are absent in renderer-only previews. */
+			});
+		return () => {
+			active = false;
+			unsubscribe?.();
+		};
+	}, []);
+	const headerLeftControlsPaddingClass = trafficLightsVisible ? "pl-[76px]" : "";
 	const { cursorTelemetrySourcePath, autoCaptions, autoCaptionSettings } = timeline;
-	const exportSettings = useExportSettings(initialEditorPreferences, autoCaptions);
+	const exportSettings = useExportSettings(
+		initialEditorPreferences,
+		autoCaptions,
+		timeline.clipRegions,
+	);
 	const {
 		includeCaptionSidecar,
 		mp4FrameRate,
@@ -338,7 +363,6 @@ export default function VideoEditor() {
 		activeEffectSection,
 		appearance,
 		timeline,
-		audio,
 		zoomCommands,
 		clipCommands,
 		audioCommands,

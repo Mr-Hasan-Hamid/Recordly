@@ -501,3 +501,16 @@ describe("editorPreferences", () => {
 		expect(saveEditorPresets([])).toBe(false);
 	});
 });
+
+
+describe("source-specific webcam metadata", () => {
+	it("does not copy imported source ranges into a reusable style preset", () => {
+		vi.stubGlobal("localStorage", createStorageMock());
+		saveEditorPresets([{ id: "webcam", name: "Webcam", createdAt: "2026-09-20T00:00:00Z", updatedAt: "2026-09-20T00:00:00Z", snapshot: {
+			...DEFAULT_EDITOR_PREFERENCES, cropRegion: DEFAULT_CROP_REGION, autoCaptionSettings: DEFAULT_AUTO_CAPTION_SETTINGS,
+			webcam: { ...DEFAULT_EDITOR_PREFERENCES.webcam, sourcePath: "/imported-webcam.mp4", visibleRanges: [{ startMs: 1000, endMs: 2000 }] },
+		} as never }]);
+		expect(loadEditorPresets()[0].snapshot.webcam).not.toHaveProperty("visibleRanges");
+		expect(loadEditorPresets()[0].snapshot.webcam).not.toHaveProperty("sourcePath");
+	});
+});

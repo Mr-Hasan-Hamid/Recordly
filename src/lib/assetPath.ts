@@ -1,3 +1,4 @@
+import { getLocalMediaServerPath } from "./localMediaUrl";
 import { resolveAvailableWallpaperPath } from "./wallpapers";
 
 function encodeRelativeAssetPath(relativePath: string): string {
@@ -186,6 +187,8 @@ function isBundledAssetPath(asset: string): boolean {
 }
 
 export async function getRenderableVideoUrl(asset: string): Promise<string> {
+	const serverPath = getLocalMediaServerPath(asset);
+	if (serverPath) return resolveLocalMediaUrl(serverPath);
 	if (
 		!asset ||
 		asset.startsWith("blob:") ||
@@ -273,11 +276,13 @@ export async function getWallpaperThumbnailUrl(asset: string): Promise<string> {
 	const cached = thumbnailCache.get(asset);
 	if (cached) return cached;
 
-	const localFilePath = toLocalFilePath(
-		asset.startsWith("/") && !asset.startsWith("//")
-			? await getAssetPath(asset.replace(/^\//, ""))
-			: asset,
-	);
+	const localFilePath =
+		(asset.startsWith("/wallpapers/") ? asset : null) ??
+		toLocalFilePath(
+			asset.startsWith("/") && !asset.startsWith("//")
+				? await getAssetPath(asset.replace(/^\//, ""))
+				: asset,
+		);
 	if (
 		!localFilePath ||
 		typeof window === "undefined" ||
