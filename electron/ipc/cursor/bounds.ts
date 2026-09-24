@@ -138,12 +138,26 @@ export async function resolveLinuxWindowBounds(
 				if (Array.isArray(clients)) {
 					const match = clients.find(
 						(c) =>
-							c.title?.toLowerCase().includes(targetTitle) ||
-							targetTitle.includes(c.title?.toLowerCase()) ||
-							c.class?.toLowerCase().includes(targetTitle) ||
-							targetTitle.includes(c.class?.toLowerCase()),
+							(typeof c.title === "string" &&
+								c.title.length > 0 &&
+								(c.title.toLowerCase().includes(targetTitle) ||
+									targetTitle.includes(c.title.toLowerCase()))) ||
+							(typeof c.class === "string" &&
+								c.class.length > 0 &&
+								(c.class.toLowerCase().includes(targetTitle) ||
+									targetTitle.includes(c.class.toLowerCase()))),
 					);
-					if (match && Array.isArray(match.at) && Array.isArray(match.size)) {
+					if (
+						match &&
+						Array.isArray(match.at) &&
+						Array.isArray(match.size) &&
+						Number.isFinite(match.at[0]) &&
+						Number.isFinite(match.at[1]) &&
+						Number.isFinite(match.size[0]) &&
+						Number.isFinite(match.size[1]) &&
+						match.size[0] > 0 &&
+						match.size[1] > 0
+					) {
 						return {
 							x: match.at[0],
 							y: match.at[1],
