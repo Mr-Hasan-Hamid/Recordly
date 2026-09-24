@@ -169,12 +169,13 @@ export function getNormalizedCursorPoint() {
 	const linuxCursorCache = process.platform === "linux" ? linuxCursorScreenPoint : null;
 	const isLinuxCacheFresh = !!linuxCursorCache && Date.now() - linuxCursorCache.updatedAt <= 1000;
 
-	// Hyprland/Wayland coordinates from socket or sync are already in desktop logical DIP coordinates,
-	// matching Electron's display.bounds and getCursorScreenPoint().
-	const cursor =
-		isLinuxCacheFresh && linuxCursorCache
-			? { x: linuxCursorCache.x, y: linuxCursorCache.y }
-			: fallbackCursor;
+	const primarySf =
+		process.platform !== "darwin" ? getScreen().getPrimaryDisplay().scaleFactor || 1 : 1;
+
+	const linuxCursorScale = linuxCursorCache?.coordinateSpace === "logical" ? 1 : primarySf;
+	const cursor = isLinuxCacheFresh
+		? { x: linuxCursorCache.x / linuxCursorScale, y: linuxCursorCache.y / linuxCursorScale }
+		: fallbackCursor;
 
 	const windowBounds = selectedSource?.id?.startsWith("window:") ? selectedWindowBounds : null;
 	if (windowBounds) {
