@@ -24,7 +24,6 @@ import {
 } from "../state";
 import type { CursorInteractionType, CursorTelemetryPoint, CursorVisualType } from "../types";
 import { getScreen, getTelemetryPathForVideo } from "../utils";
-import { getLinuxCursorSync } from "./linuxTracker";
 
 export function clamp(value: number, min: number, max: number) {
 	return Math.min(max, Math.max(min, value));
@@ -170,36 +169,21 @@ export function getNormalizedCursorPoint() {
 	const linuxCursorCache = process.platform === "linux" ? linuxCursorScreenPoint : null;
 	const isLinuxCacheFresh = !!linuxCursorCache && Date.now() - linuxCursorCache.updatedAt <= 1000;
 
-	const primarySf =
-		process.platform !== "darwin" ? getScreen().getPrimaryDisplay().scaleFactor || 1 : 1;
-
-	let linuxCursor = isLinuxCacheFresh ? linuxCursorCache : null;
-	if (process.platform === "linux" && !linuxCursor) {
-		const syncPoint = getLinuxCursorSync();
-		if (syncPoint) {
-			linuxCursor = { x: syncPoint.x, y: syncPoint.y, updatedAt: Date.now() };
-		}
-	}
-
-	const cursor = linuxCursor
-		? { x: linuxCursor.x / primarySf, y: linuxCursor.y / primarySf }
-		: fallbackCursor;
+	// Hyprland/Wayland coordinates from socket or sync are already in desktop logical DIP coordinates,
+	// matching Electron's display.bounds and getCursorScreenPoint().
+	const cursor =
+		isLinuxCacheFresh && linuxCursorCache
+			? { x: linuxCursorCache.x, y: linuxCursorCache.y }
+			: fallbackCursor;
 
 	const windowBounds = selectedSource?.id?.startsWith("window:") ? selectedWindowBounds : null;
 	if (windowBounds) {
-		const sf =
-			process.platform === "win32" || process.platform === "darwin"
-				? 1
-				: getScreen().getDisplayNearestPoint({
-						x: windowBounds.x / primarySf,
-						y: windowBounds.y / primarySf,
-					}).scaleFactor || 1;
-		const width = Math.max(1, windowBounds.width / sf);
-		const height = Math.max(1, windowBounds.height / sf);
+		const width = Math.max(1, windowBounds.width);
+		const height = Math.max(1, windowBounds.height);
 
 		return {
-			cx: clamp((cursor.x - windowBounds.x / sf) / width, 0, 1),
-			cy: clamp((cursor.y - windowBounds.y / sf) / height, 0, 1),
+			cx: clamp((cursor.x - windowBounds.x) / width, 0, 1),
+			cy: clamp((cursor.y - windowBounds.y) / height, 0, 1),
 		};
 	}
 

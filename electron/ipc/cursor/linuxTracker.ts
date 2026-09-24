@@ -68,45 +68,69 @@ export function startLinuxCursorTracker(
 	const hyprSock = getHyprlandSocketPath();
 	if (hyprSock) {
 		let inFlight = false;
+		let pollTimer: NodeJS.Timeout | null = null;
+		let currentSocket: net.Socket | null = null;
 
 		const pollHyprlandCursor = () => {
 			if (!active) return;
 			if (inFlight) {
-				setTimeout(pollHyprlandCursor, 16);
+				pollTimer = setTimeout(pollHyprlandCursor, 16);
 				return;
 			}
 			inFlight = true;
 
+			let buffer = "";
 			const client = net.createConnection(hyprSock, () => {
 				client.write("cursorpos");
 			});
+			currentSocket = client;
+			client.setTimeout(150);
 
 			client.on("data", (data) => {
-				const parts = data.toString().trim().split(",");
-				if (parts.length === 2) {
-					const x = parseFloat(parts[0]);
-					const y = parseFloat(parts[1]);
-					if (Number.isFinite(x) && Number.isFinite(y)) {
-						setLinuxCursorScreenPoint({ x, y, updatedAt: Date.now() });
-					}
-				}
-				client.end();
+				buffer += data.toString();
 			});
 
-			client.on("close", () => {
+			const handleClose = () => {
+				if (buffer) {
+					const parts = buffer.trim().split(",");
+					if (parts.length === 2) {
+						const x = parseFloat(parts[0]);
+						const y = parseFloat(parts[1]);
+						if (Number.isFinite(x) && Number.isFinite(y)) {
+							setLinuxCursorScreenPoint({ x, y, updatedAt: Date.now() });
+						}
+					}
+					buffer = "";
+				}
 				inFlight = false;
-				if (active) setTimeout(pollHyprlandCursor, 16);
+				currentSocket = null;
+				if (active) {
+					pollTimer = setTimeout(pollHyprlandCursor, 16);
+				}
+			};
+
+			client.on("timeout", () => {
+				client.destroy();
 			});
+
+			client.on("close", handleClose);
 
 			client.on("error", () => {
-				inFlight = false;
-				if (active) setTimeout(pollHyprlandCursor, 50);
+				client.destroy();
 			});
 		};
 
 		pollHyprlandCursor();
 		cleanups.push(() => {
 			active = false;
+			if (pollTimer) {
+				clearTimeout(pollTimer);
+				pollTimer = null;
+			}
+			if (currentSocket) {
+				currentSocket.destroy();
+				currentSocket = null;
+			}
 		});
 	}
 

@@ -239,26 +239,22 @@ export async function startInteractionCapture() {
 
 	stopInteractionCapture();
 
-	let linuxCleanup: (() => void) | null = null;
-	if (process.platform === "linux") {
-		linuxCleanup = startLinuxCursorTracker(
+	if (process.platform === "linux" && isLinuxWayland()) {
+		const linuxCleanup = startLinuxCursorTracker(
 			(button) => recordCursorMouseDown(button),
 			() => recordCursorMouseUp(),
 		);
-	}
-
-	if (!shouldStartGlobalInteractionHook()) {
-		console.warn("[CursorTelemetry] Skipping the blocking global interaction hook on macOS.");
-		return;
-	}
-
-	if (process.platform === "linux" && isLinuxWayland()) {
 		if (linuxCleanup) {
 			setInteractionCaptureCleanup(linuxCleanup);
 		}
 		console.log(
 			"[CursorTelemetry] Using native Linux Wayland/evdev tracker (skipping uiohook).",
 		);
+		return;
+	}
+
+	if (!shouldStartGlobalInteractionHook()) {
+		console.warn("[CursorTelemetry] Skipping the blocking global interaction hook on macOS.");
 		return;
 	}
 
@@ -309,13 +305,6 @@ export async function startInteractionCapture() {
 		}
 
 		setInteractionCaptureCleanup(() => {
-			if (linuxCleanup) {
-				try {
-					linuxCleanup();
-				} catch {
-					// ignore
-				}
-			}
 			try {
 				if (typeof hook.off === "function") {
 					hook.off("mousedown", onMouseDown);
