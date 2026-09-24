@@ -259,4 +259,52 @@ describe("Hyprland mouse buttons", () => {
 		}
 		expect(close).toHaveBeenCalledWith(42, expect.any(Function));
 	});
+
+	it("drains a full evdev buffer before the next polling interval", async () => {
+		vi.useFakeTimers();
+		const onMouseDown = vi.fn();
+		const onMouseUp = vi.fn();
+		const onDeviceOpened = vi.fn();
+		const read = vi.fn((_fd, buffer: Buffer, _offset, length, _position, callback) => {
+			if (read.mock.calls.length === 1) {
+				expect(length).toBeGreaterThan(256);
+				buffer.fill(0);
+				buffer.writeUInt16LE(1, 16);
+				buffer.writeUInt16LE(0x110, 18);
+				buffer.writeInt32LE(1, 20);
+				callback(null, length, buffer);
+			} else {
+				buffer.fill(0);
+				buffer.writeUInt16LE(1, 16);
+				buffer.writeUInt16LE(0x110, 18);
+				callback(null, 24, buffer);
+			}
+		});
+		const fsApi = {
+			open: vi.fn((_path, _flags, callback) => callback(null, 42)),
+			read,
+			close: vi.fn((_fd, callback) => callback(null)),
+		} as unknown as typeof fs;
+		const stop = startEvdevButtonCapture(
+			{ onMouseDown, onMouseUp },
+			{
+				devicePaths: ["/dev/input/event-test"],
+				fsApi,
+				platform: "linux",
+				env: waylandEnv,
+				pollIntervalMs: 10,
+				onDeviceOpened,
+			},
+		);
+		try {
+			await vi.advanceTimersByTimeAsync(10);
+			expect(onDeviceOpened).toHaveBeenCalledOnce();
+			expect(read).toHaveBeenCalledTimes(2);
+			expect(onMouseDown).toHaveBeenCalledOnce();
+			expect(onMouseUp).toHaveBeenCalledOnce();
+		} finally {
+			stop();
+			vi.useRealTimers();
+		}
+	});
 });

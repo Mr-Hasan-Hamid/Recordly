@@ -1,9 +1,10 @@
-import { resolveLinuxWindowSystem } from "../../linuxWindowSystem";
-
 export const LINUX_PORTAL_SCREEN_SOURCE_ID = "screen:linux-portal";
 
 export function isLikelyLinuxWaylandSession(env: NodeJS.ProcessEnv) {
-	return resolveLinuxWindowSystem("linux", env) === "wayland";
+	const sessionType = env.XDG_SESSION_TYPE?.trim().toLowerCase();
+	if (sessionType === "wayland") return true;
+	if (sessionType === "x11") return false;
+	return Boolean(env.WAYLAND_DISPLAY);
 }
 
 export function getScreenSourceIdForDisplay({

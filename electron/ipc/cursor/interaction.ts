@@ -249,21 +249,33 @@ export async function startInteractionCapture() {
 	}
 
 	stopInteractionCapture();
+	let evdevAvailable = false;
 
 	const onMouseDown = (event: HookMouseEvent) => {
-		recordCursorMouseDown(getHookMouseButton(event));
+		if (!evdevAvailable) {
+			recordCursorMouseDown(getHookMouseButton(event));
+		}
 	};
 
 	const onMouseUp = () => {
-		recordCursorMouseUp();
+		if (!evdevAvailable) {
+			recordCursorMouseUp();
+		}
 	};
 
 	// Raw evdev clicks (Wayland: the uiohook never sees them) — must start
 	// independently of the uiohook, which can fail to load on Wayland.
-	const stopEvdevCapture = startEvdevButtonCapture({
-		onMouseDown: (button) => onMouseDown({ button } as unknown as HookMouseEvent),
-		onMouseUp: () => onMouseUp(),
-	});
+	const stopEvdevCapture = startEvdevButtonCapture(
+		{
+			onMouseDown: recordCursorMouseDown,
+			onMouseUp: recordCursorMouseUp,
+		},
+		{
+			onDeviceOpened: () => {
+				evdevAvailable = true;
+			},
+		},
+	);
 	setInteractionCaptureCleanup(() => {
 		stopEvdevCapture();
 	});

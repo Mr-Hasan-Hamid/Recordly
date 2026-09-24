@@ -195,7 +195,7 @@ export function isHyprlandCursorProviderActive() {
 
 // ===== Cursor button events via evdev (our addition on top of #808) =====
 // Position comes from the Hyprland polling above; buttons need raw input
-// device access (user must be in the "input" group).
+// device access (for example through a udev uaccess rule).
 // Non-blocking reads: a blocking read() on an evdev char device parks a
 // libuv threadpool thread (only 4 by default) until the mouse moves — with
 // several devices open that starves the pool and hangs the recording save.
@@ -281,13 +281,15 @@ export function startEvdevButtonCapture(
 		platform?: NodeJS.Platform;
 		env?: NodeJS.ProcessEnv;
 		pollIntervalMs?: number;
+		onDeviceOpened?: () => void;
 	},
 ): () => void {
 	// Only Hyprland/Wayland sessions need raw evdev buttons: on X11 the uiohook
 	// already captures clicks, and double-counting them corrupts the telemetry.
+	const platform = options?.platform ?? process.platform;
 	if (
-		(options?.platform ?? process.platform) !== "linux" ||
-		!getHyprlandRequestSocketPath(options?.env ?? process.env)
+		platform !== "linux" ||
+		!getHyprlandRequestSocketPath(options?.env ?? process.env, platform)
 	) {
 		return () => undefined;
 	}
@@ -298,7 +300,7 @@ export function startEvdevButtonCapture(
 		let stopped = false;
 		let readInFlight = false;
 		let pendingBytes = Buffer.alloc(0);
-		const buffer = Buffer.alloc(256);
+		const buffer = Buffer.alloc(INPUT_EVENT_SIZE * 64);
 		const stop = () => {
 			stopped = true;
 			if (timer) {
@@ -331,14 +333,15 @@ export function startEvdevButtonCapture(
 					return;
 				}
 				fd = openedFd;
-				timer = setInterval(() => {
-					if (stopped || fd === null || readInFlight) {
+				options?.onDeviceOpened?.();
+				const readAvailable = () => {
+					if (stopped || fd === null) {
+						readInFlight = false;
 						return;
 					}
-					readInFlight = true;
 					fsApi.read(fd, buffer, 0, buffer.length, null, (readError, bytesRead) => {
-						readInFlight = false;
 						if (stopped || readError || bytesRead <= 0) {
+							readInFlight = false;
 							return;
 						}
 						const decoded = decodeEvdevButtonChunk(
@@ -353,7 +356,19 @@ export function startEvdevButtonCapture(
 								handlers.onMouseUp();
 							}
 						}
+						if (bytesRead === buffer.length) {
+							readAvailable();
+						} else {
+							readInFlight = false;
+						}
 					});
+				};
+				timer = setInterval(() => {
+					if (stopped || fd === null || readInFlight) {
+						return;
+					}
+					readInFlight = true;
+					readAvailable();
 				}, options?.pollIntervalMs ?? EVDEV_POLL_INTERVAL_MS);
 			},
 		);
