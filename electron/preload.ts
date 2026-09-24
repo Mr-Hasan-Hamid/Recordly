@@ -664,6 +664,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.on("cursor-state-changed", listener);
 		return () => ipcRenderer.removeListener("cursor-state-changed", listener);
 	},
+	writeClipboardText: (text: string) => {
+		return ipcRenderer.invoke("clipboard-write-text", text);
+	},
 	openExternalUrl: (url: string) => {
 		return ipcRenderer.invoke("open-external-url", url);
 	},
