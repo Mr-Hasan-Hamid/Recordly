@@ -179,12 +179,21 @@ export function getNormalizedCursorPoint() {
 
 	const windowBounds = selectedSource?.id?.startsWith("window:") ? selectedWindowBounds : null;
 	if (windowBounds) {
-		const width = Math.max(1, windowBounds.width);
-		const height = Math.max(1, windowBounds.height);
+		const sf =
+			process.platform === "win32" ||
+			process.platform === "darwin" ||
+			linuxCursorCache?.coordinateSpace === "logical"
+				? 1
+				: getScreen().getDisplayNearestPoint({
+						x: windowBounds.x / primarySf,
+						y: windowBounds.y / primarySf,
+					}).scaleFactor || 1;
+		const width = Math.max(1, windowBounds.width / sf);
+		const height = Math.max(1, windowBounds.height / sf);
 
 		return {
-			cx: clamp((cursor.x - windowBounds.x) / width, 0, 1),
-			cy: clamp((cursor.y - windowBounds.y) / height, 0, 1),
+			cx: clamp((cursor.x - windowBounds.x / sf) / width, 0, 1),
+			cy: clamp((cursor.y - windowBounds.y / sf) / height, 0, 1),
 		};
 	}
 

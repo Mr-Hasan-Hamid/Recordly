@@ -47,8 +47,10 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
 	// 3. Fallback: DOM-based execCommand copy
 	if (typeof document !== "undefined") {
+		const activeElement = document.activeElement as HTMLElement | null;
+		let textArea: HTMLTextAreaElement | null = null;
 		try {
-			const textArea = document.createElement("textarea");
+			textArea = document.createElement("textarea");
 			textArea.value = text;
 			textArea.style.position = "fixed";
 			textArea.style.opacity = "0";
@@ -59,12 +61,22 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 			textArea.focus();
 			textArea.select();
 			const success = document.execCommand("copy");
-			document.body.removeChild(textArea);
 			if (success) {
 				return true;
 			}
 		} catch {
 			// all fallbacks exhausted
+		} finally {
+			if (textArea && textArea.parentNode) {
+				textArea.parentNode.removeChild(textArea);
+			}
+			if (activeElement && typeof activeElement.focus === "function") {
+				try {
+					activeElement.focus();
+				} catch {
+					// ignore focus restore errors
+				}
+			}
 		}
 	}
 

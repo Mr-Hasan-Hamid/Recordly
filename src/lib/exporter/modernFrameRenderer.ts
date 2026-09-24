@@ -608,11 +608,24 @@ export class FrameRenderer {
 		console.log(`[FrameRenderer] Export renderer backend: ${this.rendererBackend}`);
 	}
 
+	private resolveRendererBackend(
+		application: Application,
+		fallbackBackend: ExportRenderBackend,
+	): ExportRenderBackend {
+		const rendererName = application?.renderer?.constructor?.name?.toLowerCase() ?? "";
+		if (rendererName.includes("webgpu")) {
+			return "webgpu";
+		}
+		if (rendererName.includes("webgl")) {
+			return "webgl";
+		}
+		return fallbackBackend;
+	}
+
 	private async createPixiApplication(
 		canvas: HTMLCanvasElement,
 	): Promise<{ app: Application; backend: ExportRenderBackend }> {
 		const baseOptions = {
-			canvas,
 			width: this.config.width,
 			height: this.config.height,
 			backgroundAlpha: 0,
@@ -635,6 +648,7 @@ export class FrameRenderer {
 						? ["webgl", "webgpu"]
 						: ["webgl"];
 		const failures: PixiRendererAttempt[] = [];
+		let currentCanvas = canvas;
 
 		for (const backend of backendOrder) {
 			if (backend === "webgpu" && !(typeof navigator !== "undefined" && "gpu" in navigator)) {
@@ -652,6 +666,7 @@ export class FrameRenderer {
 					app,
 					{
 						...baseOptions,
+						canvas: currentCanvas,
 						preference: backend,
 					},
 					PIXI_RENDERER_INIT_TIMEOUT_MS,
@@ -666,7 +681,8 @@ export class FrameRenderer {
 						`Renderer initialized with unsupported fallback backend after ${elapsed}ms: ${app.renderer.constructor?.name ?? "unknown"}`,
 					);
 				}
-				return { app, backend };
+				const actualBackend = this.resolveRendererBackend(app, backend);
+				return { app, backend: actualBackend };
 			} catch (error) {
 				const elapsed = Math.round(
 					(typeof performance === "undefined" ? Date.now() : performance.now()) -
@@ -684,6 +700,23 @@ export class FrameRenderer {
 					error,
 				);
 				destroyPixiApplication(app, `${backend} export renderer initialization`);
+				if (typeof document !== "undefined") {
+					currentCanvas = document.createElement("canvas");
+					currentCanvas.width = this.config.width;
+					currentCanvas.height = this.config.height;
+					try {
+						const exportCanvas = currentCanvas as HTMLCanvasElement & {
+							colorSpace?: string;
+						};
+						if ("colorSpace" in exportCanvas) {
+							exportCanvas.colorSpace = "srgb";
+						}
+					} catch {
+						// ignore
+					}
+				} else {
+					currentCanvas = {} as HTMLCanvasElement;
+				}
 			}
 		}
 
